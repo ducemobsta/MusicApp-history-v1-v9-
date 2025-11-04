@@ -1,0 +1,452 @@
+// src/App.tsx
+
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import * as Tone from 'tone';
+import { Player } from 'soundfont-player';
+import { saveAs } from 'file-saver';
+import { getInstrument, listAvailable, preloadInstruments, downloadInstrumentPack } from './lib/instruments'; // Assuming 'instruments.ts' from v6 exists
+import TinySynth from 'webaudio-tinysynth';
+
+// --- DATA: Consolidated from v5 ---
+const NOTE_MAP = {
+    'C major': ['C4', 'D4', 'E4', 'F4', 'G4', 'A4', 'B4', 'C5'], 'A minor': ['A3', 'B3', 'C4', 'D4', 'E4', 'F4', 'G4', 'A4'],
+    'G major': ['G3', 'A3', 'B3', 'C4', 'D4', 'E4', 'F#4', 'G4'], 'E minor': ['E3', 'F#3', 'G3', 'A3', 'B3', 'C4', 'D4', 'E4'],
+    'F major': ['F3', 'G3', 'A3', 'Bb3', 'C4', 'D4', 'E4', 'F4'], 'D minor': ['D3', 'E3', 'F3', 'G3', 'A3', 'Bb3', 'C4', 'D4'],
+    'C# minor': ['C#3', 'D#3', 'E3', 'F#3', 'G#3', 'A3', 'B3', 'C#4'], 'F minor': ['F3', 'G3', 'Ab3', 'Bb3', 'C4', 'Db4', 'Eb4', 'F4'],
+    'F# minor': ['F#3', 'G#3', 'A3', 'B3', 'C#4', 'D4', 'E4', 'F#4'], 'C minor': ['C3', 'D3', 'Eb3', 'F3', 'G3', 'Ab3', 'Bb3', 'C4'],
+    'Eb major': ['Eb3', 'F3', 'G3', 'Ab3', 'Bb3', 'C4', 'D4', 'Eb4'], 'G minor': ['G3', 'A3', 'Bb3', 'C4', 'D4', 'Eb4', 'F4', 'G4']
+};
+const ROMAN_TO_DEGREE = { 'i': 0, 'I': 0, 'ii': 1, 'II': 1, 'iii': 2, 'III': 2, 'iv': 3, 'IV': 3, 'v': 4, 'V': 4, 'vi': 5, 'VI': 5, 'vii': 6, 'VII': 6, 'bII': 1, 'bIII': 2, 'bVI': 5, 'bVII': 6 };
+const PRODUCER_PROGRESSIONS = {
+    'J Dilla': [ { id: 'jd1', name: 'Jazzy Loop', roman: ['i', 'iv', 'bVII', 'bIII'] }, { id: 'jd2', name: 'Chromatic Jazz', roman: ['i', 'iiø', 'V7', 'i'] } ], 'Kanye West': [ { id: 'kw1', name: 'Soul Sample', roman: ['I', 'vi', 'IV', 'V'] }, { id: 'kw2', name: 'Orchestral Lift', roman: ['I', 'III', 'vi', 'IV'] } ],
+    'DJ Quik': [ { id: 'q1', name: 'G-Funk Classic', roman: ['i', 'bVII', 'bVI', 'V7'] }, { id: 'q2', name: 'Sunny Chorus', roman: ['I', 'V', 'vi', 'IV'] } ], 'Timbaland': [ { id: 'tim1', name: 'Dark Syncopation', roman: ['i', 'bVI', 'bIII', 'bVII'] }, { id: 'tim2', name: 'Chromatic Stutter', roman: ['i', 'bII', 'i', 'v'] } ],
+    'Zaytoven': [ { id: 'zay1', name: 'Piano Trap', roman: ['i', 'v', 'iv', 'i'] }, { id: 'zay2', name: 'Minor Ladder', roman: ['i', 'bVII', 'VI', 'v'] } ], 'No I.D.': [ { id: 'noid1', name: 'Warm Soul', roman: ['I', 'vi', 'ii', 'V'] }, { id: 'noid2', name: 'Introspective Minor', roman: ['i', 'iv', 'bVI', 'bIII'] } ],
+    'Default': [ { id: 'def1', name: 'Standard', roman: ['i', 'iv', 'v', 'i'] } ],
+};
+const GENRE_PROGRESSIONS = {
+    'Trap': [ { id: 'trap1', name: 'Classic Trap', roman: ['i', 'bVI', 'bIII', 'bVII'] }, { id: 'trap2', name: 'Dark Vamp', roman: ['i', 'iv', 'v', 'i'] } ], 'Drill': [ { id: 'drill1', name: 'Dark Slide', roman: ['i', 'bIII', 'bVI', 'bVII'] }, { id: 'drill2', name: 'Two Chord Menace', roman: ['i', 'v', 'i', 'v'] } ],
+    'R&B': [ { id: 'rnb1', name: 'Classic R&B', roman: ['ii', 'V', 'I', 'vi'] }, { id: 'rnb2', name: 'Neo-soul Sway', roman: ['i', 'iv', 'bVI', 'bIII'] } ], 'Lo-fi': [ { id: 'lofi1', name: 'Jazzy Lo-fi', roman: ['Imaj7', 'IVmaj7', 'ii7', 'V7'] }, { id: 'lofi2', name: 'Warm Shuffle', roman: ['I', 'vi7', 'ii7', 'V7'] } ],
+};
+const PRODUCER_SPECS = {
+    'Pharrell': { effects: { saturation: 0.2, reverb: { mix: 0.3, decay: 1.2 } }, rhythm: { swing: 0.4 } }, 'Timbaland': { effects: { saturation: 0.6, reverb: { mix: 0.25, decay: 0.8 } }, rhythm: { swing: 0.7 } },
+    'Zaytoven': { effects: { saturation: 0.9, reverb: { mix: 0.4, decay: 1.5 } }, rhythm: { swing: 0.2 } }, 'Just Blaze': { effects: { saturation: 0.3, reverb: { mix: 0.5, decay: 2.5 } }, rhythm: { swing: 0.5 } },
+    'Missy Elliott': { effects: { saturation: 0.8, reverb: { mix: 0.35, decay: 1.0 } }, rhythm: { swing: 0.8 } }, 'Dr. Dre': { effects: { saturation: 0.7, reverb: { mix: 0.4, decay: 2.0 } }, rhythm: { swing: 0.5 } },
+    'J Dilla': { effects: { saturation: 0.3, reverb: { mix: 0.3, decay: 0.8 } }, rhythm: { swing: 0.6 } }, 'Kanye West': { effects: { saturation: 0.5, reverb: { mix: 0.6, decay: 3.0 } }, rhythm: { swing: 0.4 } },
+    'DJ Quik': { effects: { saturation: 0.4, reverb: { mix: 0.35, decay: 1.5 } }, rhythm: { swing: 0.6 } }, 'No I.D.': { effects: { saturation: 0.3, reverb: { mix: 0.4, decay: 1.8 } }, rhythm: { swing: 0.5 } },
+    'Default': { effects: { saturation: 0.4, reverb: { mix: 0.3, decay: 1.5 } }, rhythm: { swing: 0.3 } }
+};
+const GENRE_SPECS = {
+    'Trap': { bpm: { min: 130, max: 170, common: 140 }, scales: ['A minor', 'C# minor', 'F minor'], hihatDensity: 'high', structure: { intro: 8, verse: 16, chorus: 16, bridge: 8, outro: 8 } },
+    'Trap-Soul': { bpm: { min: 60, max: 100, common: 80 }, scales: ['A minor', 'D minor'], hihatDensity: 'medium', structure: { intro: 4, verse: 8, chorus: 8, bridge: 4, outro: 4 } },
+    'R&B': { bpm: { min: 90, max: 120, common: 95 }, scales: ['C major', 'G major'], hihatDensity: 'medium', structure: { intro: 4, verse: 8, chorus: 8, bridge: 8, outro: 4 } },
+    'Soul': { bpm: { min: 90, max: 120, common: 95 }, scales: ['C major', 'F major'], hihatDensity: 'low', structure: { intro: 4, verse: 8, chorus: 8, bridge: 4, outro: 4 } },
+    '90s Rap': { bpm: { min: 80, max: 110, common: 90 }, scales: ['A minor', 'E minor'], hihatDensity: 'medium', structure: { intro: 4, verse: 16, chorus: 8, outro: 4 } },
+    'Lo-fi': { bpm: { min: 80, max: 110, common: 85 }, scales: ['C major', 'A minor'], hihatDensity: 'low', structure: { intro: 4, verse: 8, chorus: 8, bridge: 4, outro: 4 } },
+    'Drill': { bpm: { min: 135, max: 150, common: 142 }, scales: ['C minor', 'F# minor'], hihatDensity: 'very-high', structure: { intro: 4, verse: 16, chorus: 8, outro: 4 } },
+    'G-Funk': { bpm: { min: 85, max: 100, common: 90 }, scales: ['C minor', 'G minor'], hihatDensity: 'medium', structure: { intro: 4, verse: 8, chorus: 8, outro: 4 } },
+    'Neo-Soul': { bpm: { min: 70, max: 90, common: 80 }, scales: ['D minor', 'Eb major'], hihatDensity: 'low', structure: { intro: 4, verse: 8, chorus: 8, bridge: 8, outro: 4 } }
+};
+
+// --- TYPES (from v5) ---
+type Genre = keyof typeof GENRE_SPECS;
+type Producer = keyof typeof PRODUCER_SPECS;
+type AgentStatus = 'idle' | 'processing' | 'complete' | 'error';
+type SongStructureType = 'intro' | 'verse' | 'chorus' | 'bridge' | 'outro';
+type MelodicContour = 'arch' | 'rising' | 'falling' | 'random';
+type GenerationMode = 'Procedural' | 'LLM';
+interface GenerationSettings {
+    genre: Genre; producer: Producer; producerB: Producer; producerMix: number; key: string; tempo: number; duration: number; complexity: number;
+    rhythmicDensity: number; useProducerProgressions: boolean; energyCurve: { [key in SongStructureType]?: number }; useLoFiVinyl: boolean;
+    seed: string; reverbMix: number; saturation: number; melodicContour: MelodicContour;
+}
+interface Core { id: string; name: string; description: string; icon: string; generationMode: GenerationMode; }
+// v7 Type for local instruments
+interface LocalInstrument { name: string; program: number; }
+
+// --- PROCEDURAL MUSIC ENGINE (from v5) ---
+class MusicGenerator {
+    private random: () => number;
+    constructor(seed: string) {
+        let h = 1779033703;
+        for (let i = 0; i < seed.length; i++) {
+            h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+            h = h << 13 | h >>> 19;
+        }
+        this.random = () => { h = Math.imul(h ^ h >>> 16, 2246822507); h = Math.imul(h ^ h >>> 13, 3266489909); return ((h ^= h >>> 16) >>> 0) / 4294967296; };
+    }
+    generateStructure(totalBars: number, template: any) {
+        const sections: Array<{ type: SongStructureType; start: number; end: number }> = [];
+        let currentBar = 0;
+        const order: SongStructureType[] = ['intro', 'verse', 'chorus', 'verse', 'chorus', 'bridge', 'chorus', 'outro'];
+        for (const sectionType of order) {
+            if (currentBar >= totalBars) break;
+            const length = template[sectionType] || 4;
+            const end = Math.min(currentBar + length, totalBars);
+            sections.push({ type: sectionType, start: currentBar, end });
+            currentBar = end;
+        }
+        return sections;
+    }
+    generateRhythm(bars: number, spec: any, structure: any, settings: GenerationSettings) {
+        const patterns: any = { kick: [], snare: [], hihat: [] };
+        const baseKick = [1,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0];
+        const baseSnare = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0];
+        const beatsPerBar = 16;
+        for (let b = 0; b < bars; b++) {
+            const section = structure?.find((s: any) => b >= s.start && b < s.end);
+            const sectionType = section?.type || 'verse';
+            const energy = settings.energyCurve[sectionType] || 1.0;
+            for (let i = 0; i < beatsPerBar; i++) {
+                const time = `${b}:${Math.floor(i / 4)}:${i % 4}`;
+                if (this.random() > settings.rhythmicDensity * energy) continue;
+                const velocity = (0.8 + (this.random() * 0.2)) * energy;
+                if (baseKick[i] === 1 && this.random() < 0.9) patterns.kick.push({ time, velocity: velocity * 1.0 });
+                if (baseSnare[i] === 1 && this.random() < 0.95) patterns.snare.push({ time, velocity: velocity * 0.8 });
+                const hhChance = spec.hihatDensity === 'very-high' ? 0.95 : spec.hihatDensity === 'high' ? 0.8 : spec.hihatDensity === 'medium' ? 0.6 : 0.4;
+                if ( (i % 2 === 0 || this.random() < 0.3) && this.random() < hhChance) patterns.hihat.push({ time, velocity: velocity * 0.5 });
+            }
+        }
+        return patterns;
+    }
+    generateHarmony(scale: string[], bars: number, structure: any, settings: GenerationSettings) {
+        const chords = []; const getProgression = () => { const progs = settings.useProducerProgressions ? PRODUCER_PROGRESSIONS[settings.producer] : GENRE_PROGRESSIONS[settings.genre]; return progs[Math.floor(this.random() * progs.length)]; };
+        const mainProgression = getProgression();
+        for (let bar = 0; bar < bars; bar++) {
+            const section = structure?.find((s: any) => bar >= s.start && bar < s.end); const sectionType = section?.type || 'verse'; const progression = mainProgression.roman; const numeral = progression[bar % progression.length];
+            const degree = ROMAN_TO_DEGREE[numeral.replace(/[^IVivb]/g, '')] || 0;
+            const notes = [ scale[degree % scale.length], scale[(degree + 2) % scale.length], scale[(degree + 4) % scale.length] ];
+            if (settings.complexity > 0.5 || sectionType === 'chorus') notes.push(scale[(degree + 6) % scale.length]);
+            chords.push({ time: `${bar}:0:0`, notes, duration: '1m', velocity: 0.7, section: sectionType });
+        }
+        return { harmony: chords, progressionName: mainProgression.name };
+    }
+    generateMelody(scale: string[], bars: number, harmony: any[], structure: any, complexity: number, contour: MelodicContour) {
+        const notes = [];
+        for (let b = 0; b < bars; b++) {
+            const section = structure?.find((s: any) => b >= s.start && b < s.end); const sectionType = section?.type || 'verse'; const playChance = sectionType === 'chorus' ? 0.85 : 0.6; const subdivision = complexity > 0.7 ? 8 : 4;
+            for (let i = 0; i < subdivision; i++) {
+                if (this.random() < playChance) {
+                    let stepDirection = this.random() < 0.5 ? -1 : 1; if (contour === 'rising') stepDirection = 1; if (contour === 'falling') stepDirection = -1;
+                    const step = stepDirection * (this.random() < 0.7 ? 1 : 2); const noteIndex = Math.floor(this.random() * scale.length); const note = scale[(noteIndex + step + scale.length) % scale.length];
+                    notes.push({ time: `${b}:${Math.floor(i*4/subdivision)}:${(i*4)%subdivision}`, note, duration: '16n', velocity: 0.6 + this.random() * 0.4 });
+                }
+            }
+        }
+        return notes;
+    }
+    generateBass(harmony: any[]) { return harmony.map(c => ({ time: c.time, note: `${c.notes[0].slice(0, -1)}2`, duration: '2n', velocity: c.velocity * 1.2 })); }
+}
+
+// --- AUDIO RENDERING & PLAYBACK (UPDATED FOR V7) ---
+class AudioService {
+    private parts: any[] = [];
+    private analyser: Tone.Analyser | null = null;
+    private reverb: Tone.Reverb | null = null;
+    private distortion: Tone.Distortion | null = null;
+    private masterChannel: Tone.Channel | null = null;
+    private localSynth: TinySynth | null = null; // v7 Change
+
+    private instruments = {
+        kick: new Tone.MembraneSynth({ volume: -2 }), snare: new Tone.NoiseSynth({ volume: -8, noise: { type: 'pink' }, envelope: { attack: 0.001, decay: 0.1, sustain: 0 } }),
+        hihat: new Tone.MetalSynth({ volume: -16, envelope: { attack: 0.001, decay: 0.05, release: 0.02 }, harmonicity: 3.1, modulationIndex: 32, resonance: 4000 }),
+        melody: null as Player | null, chords: null as Player | null, bass: null as Player | null,
+    };
+
+    async init() { await Tone.start(); }
+    setReverbMix(wet: number) { if (this.reverb) this.reverb.wet.value = wet; }
+    setSaturation(amount: number) { if (this.distortion) this.distortion.distortion = amount; }
+    setLocalSynth(synth: TinySynth) { this.localSynth = synth; } // v7 Change
+
+    cleanup() {
+        this.parts.forEach(p => p.dispose()); this.parts = [];
+        Object.values(this.instruments).forEach((inst: any) => inst?.stop?.());
+        Tone.Transport.cancel(); this.reverb?.dispose(); this.distortion?.dispose(); this.masterChannel?.dispose();
+    }
+    
+    // V7 Change: `schedule` now handles both remote (SoundFont-Player) and local (TinySynth) instruments
+    async schedule(comp: any, instrumentSelection: any, localInstruments: LocalInstrument[]) {
+        this.cleanup();
+        const producer = PRODUCER_SPECS[comp.producer];
+        this.reverb = new Tone.Reverb({ decay: producer.effects.reverb.decay, wet: comp.reverbMix }).toDestination();
+        this.distortion = new Tone.Distortion(comp.saturation);
+        this.masterChannel = new Tone.Channel().chain(this.distortion, this.reverb);
+
+        if (this.localSynth) this.localSynth.out.connect(this.masterChannel.input); // Connect local synth output
+        this.instruments.kick.connect(this.masterChannel); this.instruments.snare.connect(this.masterChannel); this.instruments.hihat.connect(this.masterChannel);
+        
+        // Load remote SoundFont instruments
+        const remoteInstrumentsToLoad = [
+            { part: 'melody', name: instrumentSelection.melody, isLocal: localInstruments.some(i => i.name === instrumentSelection.melody) },
+            { part: 'chords', name: instrumentSelection.chords, isLocal: localInstruments.some(i => i.name === instrumentSelection.chords) },
+            { part: 'bass', name: instrumentSelection.bass, isLocal: localInstruments.some(i => i.name === instrumentSelection.bass) },
+        ].filter(inst => !inst.isLocal);
+
+        const loadedPlayers = await Promise.all(remoteInstrumentsToLoad.map(inst => getInstrument(inst.name)));
+        loadedPlayers.forEach((player, index) => { this.instruments[remoteInstrumentsToLoad[index].part] = player; });
+
+        if (!this.analyser) { this.analyser = new Tone.Analyser('waveform', 1024); this.masterChannel.connect(this.analyser); }
+
+        // Schedule Drums
+        this.parts.push(new Tone.Part((time, e) => { this.instruments.kick.triggerAttackRelease('C1', '8n', time, e.velocity); }, comp.rhythm.kick).start(0));
+        this.parts.push(new Tone.Part((time, e) => { this.instruments.snare.triggerAttackRelease('8n', time, e.velocity); }, comp.rhythm.snare).start(0));
+        this.parts.push(new Tone.Part((time, e) => { this.instruments.hihat.triggerAttackRelease('16n', time, e.velocity); }, comp.rhythm.hihat).start(0));
+        
+        // Schedule Melodic Parts
+        const schedulePart = (partName: string, notes: any[], channel: number) => {
+            const selection = instrumentSelection[partName];
+            const localInstrument = localInstruments.find(i => i.name === selection);
+
+            if (localInstrument && this.localSynth) { // Use Local .sf2 Synth
+                this.localSynth.setTimbre(channel, localInstrument.program);
+                this.parts.push(new Tone.Part((time, n) => {
+                    const midiNote = Tone.Frequency(n.note || n.notes[0]).toMidi();
+                    const velocity = Math.floor((n.velocity || 0.7) * 127);
+                    const duration = Tone.Time(n.duration).toSeconds();
+                    this.localSynth?.send([0x90 + channel, midiNote, velocity]); // Note On
+                    Tone.Transport.scheduleOnce(() => { this.localSynth?.send([0x80 + channel, midiNote, 0]); }, `+${duration}`); // Note Off
+                }, notes).start(0));
+            } else { // Use Remote SoundFont Player
+                const player = this.instruments[partName];
+                if (player) {
+                    this.parts.push(new Tone.Part((time, n) => {
+                        player.play(n.note || n.notes[0], time, { duration: Tone.Time(n.duration).toSeconds(), gain: n.velocity });
+                    }, notes).start(0));
+                }
+            }
+        };
+
+        schedulePart('chords', comp.harmony, 0); schedulePart('bass', comp.bass, 1); schedulePart('melody', comp.melody, 2);
+
+        Tone.Transport.bpm.value = comp.tempo; Tone.Transport.swing = producer.rhythm.swing; Tone.Transport.loop = true; Tone.Transport.loopEnd = `${comp.bars}m`;
+    }
+
+    // Export function from v5, adapted for modern context
+    async exportFullMix(composition: any, instrumentSelection: any, localInstruments: any[]): Promise<Blob> {
+        const buffer = await Tone.Offline(async (transport) => {
+            // Note: Tone.Offline has limitations with dynamic loading and complex schedulers.
+            // This is a simplified approach; a more robust solution might use a dedicated offline audio graph.
+            const offlineAudioService = new AudioService();
+            // We can't easily transfer the loaded TinySynth instance to the Offline context.
+            // For export, we will fallback to rendering remote instruments only.
+            // This is a known limitation when mixing fundamentally different audio engines.
+            await offlineAudioService.schedule({ ...composition, reverbMix: composition.reverbMix, saturation: composition.saturation }, instrumentSelection, []);
+            transport.Transport.start();
+        }, composition.duration);
+        
+        const audioCtx = Tone.getContext().rawContext; const worker = new Worker(URL.createObjectURL(new Blob([`
+            self.onmessage = e => { const wav = toWav(e.data); self.postMessage(wav, [wav.buffer]); };
+            function toWav(d) {
+                let sR = ${audioCtx.sampleRate}, nC = d.length, f=1, bD=16, bS=bD/8, bA=nC*bS, bR=sR*bA, dS=d[0].length*bA, b=new ArrayBuffer(44+dS), v=new DataView(b);
+                function wS(v,o,s){for(let i=0;i<s.length;i++){v.setUint8(o+i,s.charCodeAt(i));}}
+                wS(v,0,'RIFF');v.setUint32(4,36+dS,true);wS(v,8,'WAVE');wS(v,12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,f,true);v.setUint16(22,nC,true);
+                v.setUint32(24,sR,true);v.setUint32(28,bR,true);v.setUint16(32,bA,true);v.setUint16(34,bD,true);wS(v,36,'data');v.setUint32(40,dS,true);
+                let o=44;for(let i=0;i<d[0].length;i++){for(let c=0;c<nC;c++){let s=Math.max(-1,Math.min(1,d[c][i]));s=s<0?s*32768:s*32767;v.setInt16(o,s,true);o+=bS;}}
+                return new Blob([v],{type:'audio/wav'});
+            }`],{type:'application/javascript'})));
+        
+        return new Promise(resolve => { worker.onmessage = e => resolve(e.data); worker.postMessage(buffer.getChannelData()); });
+    }
+
+    play() { Tone.Transport.start(); }
+    stop() { Tone.Transport.stop(); Tone.Transport.position = 0; }
+    getAnalyser() { return this.analyser; }
+    dispose() { this.stop(); this.cleanup(); this.analyser?.dispose(); }
+}
+
+// --- CORE LOGIC WRAPPERS (from v5) ---
+const ThemeDirectorCore = { run: (settings: GenerationSettings, generator: MusicGenerator) => { const spec = GENRE_SPECS[settings.genre]; const scale = NOTE_MAP[settings.key]; const bars = Math.ceil((settings.tempo / 60) * settings.duration / 4); const structure = generator.generateStructure(bars, spec.structure); return { settings, spec, scale, bars, structure }; } };
+const HarmonyCore = { run: (plan, generator) => generator.generateHarmony(plan.scale, plan.bars, plan.structure, plan.settings) };
+const RhythmCore = { run: (plan, generator) => ({ rhythm: generator.generateRhythm(plan.bars, plan.spec, plan.structure, plan.settings)}) };
+const MelodyCore = { run: (plan, generator, harmonyData) => { const melody = generator.generateMelody(plan.scale, plan.bars, harmonyData.harmony, plan.structure, plan.settings.complexity, plan.settings.melodicContour); const bass = generator.generateBass(harmonyData.harmony); return { melody, bass }; } };
+// V7 Change: AudioSynthCore passes instrument selections and local instrument data
+const AudioSynthCore = {
+    run: async (plan: any, audioService: AudioService, fullData: any, instrumentSelection: any, localInstruments: any[]) => {
+        const composition = { ...plan.settings, ...fullData.harmony, ...fullData.rhythm, ...fullData.melody, bars: plan.bars, duration: plan.settings.duration };
+        await audioService.schedule(composition, instrumentSelection, localInstruments);
+        return { composition };
+    }
+};
+
+// --- UI COMPONENTS (from v5) ---
+const LogEntry = ({ log }: { log: any }) => ( <div className={`p-2 mb-2 rounded border-l-4 font-mono text-sm bg-gray-800/50 border-${log.type === 'success' ? 'green-500' : log.type === 'error' ? 'red-500' : 'blue-500'} text-gray-300`}> <span className="mr-3 text-gray-500">[{log.timestamp}]</span><span>{log.message}</span> </div> );
+const ChainNode = ({ core, status }: { core: Core, status: AgentStatus }) => { const statusClasses = { idle: 'bg-gray-700 border-gray-500', processing: 'bg-blue-500/50 border-blue-400 animate-pulse', complete: 'bg-green-500/50 border-green-400', error: 'bg-red-500/50 border-red-400', }; return ( <div className="text-center"> <div className={`w-16 h-16 rounded-full mx-auto mb-2 flex items-center justify-center text-2xl border-2 ${statusClasses[status]}`}><i className={core.icon}></i></div> <div className="text-sm font-medium">{core.name}</div> </div> ); };
+
+// --- MAIN APP COMPONENT (UPDATED FOR V7) ---
+export default function App() {
+    const [settings, setSettings] = useState<GenerationSettings>({
+        genre: 'Lo-fi', producer: 'J Dilla', producerB: 'Default', producerMix: 0, key: 'A minor', tempo: 85, duration: 120, complexity: 0.6, rhythmicDensity: 0.9,
+        useProducerProgressions: true, energyCurve: { verse: 0.8, chorus: 1.0, bridge: 0.7, intro: 0.6, outro: 0.5 }, useLoFiVinyl: true, seed: 'gemini-v7',
+        reverbMix: 0.3, saturation: 0.3, melodicContour: 'arch'
+    });
+    
+    // v7 Change: State for instruments (remote, local)
+    const [instrumentSelection, setInstrumentSelection] = useState({ melody: 'violin', chords: 'acoustic_grand_piano', bass: 'acoustic_bass' });
+    const [remoteInstruments, setRemoteInstruments] = useState<string[]>([]);
+    const [localInstruments, setLocalInstruments] = useState<LocalInstrument[]>([]);
+    const [allAvailableInstruments, setAllAvailableInstruments] = useState<string[]>([]);
+    
+    const [logs, setLogs] = useState<any[]>([]);
+    const [activeChain, setActiveChain] = useState<Core[]>([]);
+    const [availableCores] = useState<Core[]>([
+        { id: 'theme', name: 'Theme Director', description: 'Establishes mood and structure', icon: 'fas fa-layer-group', generationMode: 'Procedural' }, { id: 'harmony', name: 'Harmony Core', description: 'Builds chord progressions', icon: 'fas fa-wave-square', generationMode: 'Procedural' },
+        { id: 'rhythm', name: 'Rhythm Architect', description: 'Designs drum patterns', icon: 'fas fa-drum', generationMode: 'Procedural' }, { id: 'melody', name: 'Melody & Bass', description: 'Composes melodic lines', icon: 'fas fa-music', generationMode: 'Procedural' },
+        { id: 'synthesis', name: 'Audio Synthesizer', description: 'Renders audio', icon: 'fas fa-sliders-h', generationMode: 'Procedural' },
+    ]);
+    const [generationStatus, setGenerationStatus] = useState<any>({});
+    const [isGenerating, setIsGenerating] = useState(false); const [isPlaying, setIsPlaying] = useState(false);
+    const [composition, setComposition] = useState<any>(null); const [isExporting, setIsExporting] = useState(false); const [isPreloading, setIsPreloading] = useState(false);
+
+    const audioServiceRef = useRef<AudioService | null>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const animationFrameRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        audioServiceRef.current = new AudioService();
+        audioServiceRef.current.init();
+        const remote = listAvailable();
+        setRemoteInstruments(remote);
+        setAllAvailableInstruments(remote);
+        addLog('info', 'AI Music Studio v7 Initialized.');
+        return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); audioServiceRef.current?.dispose(); };
+    }, []);
+
+    useEffect(() => {
+        // v7 Change: Update dropdown list when local instruments are loaded
+        const localNames = localInstruments.map(i => i.name);
+        const combined = [...new Set([...remoteInstruments, ...localNames])].sort();
+        setAllAvailableInstruments(combined);
+    }, [remoteInstruments, localInstruments]);
+
+    const addLog = (type: string, message: string) => setLogs(prev => [{ type, message, timestamp: new Date().toLocaleTimeString() }, ...prev]);
+    
+    const drawVisualizer = useCallback(() => {
+        if (!canvasRef.current || !audioServiceRef.current || !isPlaying) return;
+        const analyser = audioServiceRef.current.getAnalyser(); if (!analyser) return;
+        const canvas = canvasRef.current, ctx = canvas.getContext('2d'); if (!ctx) return;
+        const values = analyser.getValue() as Float32Array;
+        ctx.fillStyle = '#1e293b'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = '#8b5cf6'; ctx.lineWidth = 2; ctx.beginPath();
+        for (let i = 0; i < values.length; i++) { const y = ((values[i] + 1) / 2) * canvas.height; if (i === 0) ctx.moveTo(i, y); else ctx.lineTo(i, y); }
+        ctx.stroke(); animationFrameRef.current = requestAnimationFrame(drawVisualizer);
+    }, [isPlaying]);
+
+    const handleGenerate = async () => {
+        const chain = availableCores; setActiveChain(chain); setIsGenerating(true); setIsPlaying(false); audioServiceRef.current?.stop();
+        addLog('info', `Generation started with seed: ${settings.seed}`);
+        setGenerationStatus(chain.reduce((acc, core) => ({ ...acc, [core.id]: 'idle' }), {}));
+        const generator = new MusicGenerator(settings.seed); let fullData: any = {}; let hasError = false;
+        for (const core of chain) {
+            setGenerationStatus(prev => ({ ...prev, [core.id]: 'processing' }));
+            try {
+                let result: any;
+                switch (core.id) {
+                    case 'theme': result = ThemeDirectorCore.run(settings, generator); break;
+                    case 'harmony': result = HarmonyCore.run(fullData.theme, generator); break;
+                    case 'rhythm': result = RhythmCore.run(fullData.theme, generator); break;
+                    case 'melody': result = MelodyCore.run(fullData.theme, generator, fullData.harmony); break;
+                    case 'synthesis': result = await AudioSynthCore.run(fullData.theme, audioServiceRef.current!, fullData, instrumentSelection, localInstruments); setComposition(result.composition); break;
+                    default: throw new Error(`Unknown core: ${core.id}`);
+                }
+                fullData[core.id] = result; setGenerationStatus(prev => ({ ...prev, [core.id]: 'complete' })); addLog('success', `✓ ${core.name} completed.`);
+            } catch (error: any) { addLog('error', `✗ ${core.name} failed: ${error.message}`); setGenerationStatus(prev => ({ ...prev, [core.id]: 'error' })); hasError = true; break; }
+        }
+        setIsGenerating(false); addLog(hasError ? 'error' : 'success', `Generation ${hasError ? 'failed' : 'complete'}.`);
+    };
+
+    const handlePlayToggle = () => {
+        if (isPlaying) { audioServiceRef.current?.stop(); setIsPlaying(false); if(animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); }
+        else if (composition) { audioServiceRef.current?.play(); setIsPlaying(true); requestAnimationFrame(drawVisualizer); }
+    };
+    
+    const handleSave = async () => {
+        if (!composition) return; setIsExporting(true);
+        addLog('info', 'Saving audio to WAV... This will use remote instruments for any local SoundFont selections.');
+        try {
+            const blob = await audioServiceRef.current?.exportFullMix(composition, instrumentSelection, localInstruments);
+            if (blob) { saveAs(blob, `gemini-studio-v7-${settings.seed}.wav`); addLog('success', 'Audio saved successfully!'); }
+        } catch (e: any) { addLog('error', `Save failed: ${e.message}`); }
+        setIsExporting(false);
+    };
+
+    const handlePreloadPack = async () => {
+        const pack = ['acoustic_grand_piano', 'violin', 'cello', 'flute', 'acoustic_bass'];
+        setIsPreloading(true); addLog('info', `Preloading instrument pack: ${pack.join(', ')}`);
+        const results = await preloadInstruments(pack);
+        if(results.success.length > 0) addLog('success', `Successfully preloaded: ${results.success.join(', ')}`);
+        if(results.failed.length > 0) addLog('error', `Failed to preload: ${results.failed.join(', ')}`);
+        setIsPreloading(false);
+    };
+    
+    const handleDownloadPack = async () => {
+        const pack = ['acoustic_grand_piano', 'violin', 'cello', 'flute', 'acoustic_bass', 'trumpet'];
+        addLog('info', `Packaging instruments for download...`); await downloadInstrumentPack(pack); addLog('success', 'Download started.');
+    };
+
+    // V7 Change: Handler for loading a local .sf2 file
+    const handleSoundFontFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0]; if (!file) return;
+        addLog('info', `Loading local SoundFont: ${file.name}...`);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const arrayBuffer = e.target?.result as ArrayBuffer;
+            if (arrayBuffer) {
+                const synth = new TinySynth(); synth.loadSoundFont(arrayBuffer);
+                audioServiceRef.current?.setLocalSynth(synth);
+                const instruments = synth.getTimbreList().map(p => ({ name: p.name, program: p.program }));
+                setLocalInstruments(instruments);
+                addLog('success', `SoundFont loaded! Found ${instruments.length} instruments.`);
+            }
+        };
+        reader.onerror = () => { addLog('error', 'Failed to read the .sf2 file.'); };
+        reader.readAsArrayBuffer(file);
+    };
+
+    const handleSettingChange = (field: keyof GenerationSettings, value: any) => setSettings(prev => ({ ...prev, [field]: value }));
+    const handleInstrumentChange = (part: keyof typeof instrumentSelection, value: string) => setInstrumentSelection(prev => ({...prev, [part]: value}));
+
+    return (
+        <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-4">
+            <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                <div className="lg:col-span-1 bg-slate-800/50 rounded-lg p-6 space-y-4 border border-slate-700">
+                    <h1 className="text-2xl font-bold text-purple-400">AI Music Studio v7</h1>
+                    {/* Settings from v5 */}
+                    <div><label className="text-sm">Genre</label><select value={settings.genre} onChange={e => handleSettingChange('genre', e.target.value)} className="w-full bg-slate-700 p-2 rounded">{Object.keys(GENRE_SPECS).map(g => (<option key={g} value={g}>{g}</option>))}</select></div>
+                    <div><label className="text-sm">Producer Style</label><select value={settings.producer} onChange={e => handleSettingChange('producer', e.target.value)} className="w-full bg-slate-700 p-2 rounded">{Object.keys(PRODUCER_SPECS).map(p => (<option key={p} value={p}>{p}</option>))}</select></div>
+                    <div><label className="text-sm">Key</label><select value={settings.key} onChange={e => handleSettingChange('key', e.target.value)} className="w-full bg-slate-700 p-2 rounded">{Object.keys(NOTE_MAP).map(k => (<option key={k} value={k}>{k}</option>))}</select></div>
+                    <div><label className="text-sm">Tempo: {settings.tempo} BPM</label><input type="range" min={GENRE_SPECS[settings.genre].bpm.min} max={GENRE_SPECS[settings.genre].bpm.max} value={settings.tempo} onChange={e => handleSettingChange('tempo', parseInt(e.target.value))} className="w-full" /></div>
+                    <div><label className="text-sm">Seed</label><input type="text" value={settings.seed} onChange={e => handleSettingChange('seed', e.target.value)} className="w-full bg-slate-700 p-2 rounded" /></div>
+                    
+                    <hr className="border-slate-600"/>
+                    <h2 className="text-lg font-bold text-slate-300 pt-2">Instruments</h2>
+                    <div><label className="text-sm">Melody</label><select value={instrumentSelection.melody} onChange={e => handleInstrumentChange('melody', e.target.value)} className="w-full bg-slate-700 p-2 rounded">{allAvailableInstruments.map(i => (<option key={i} value={i}>{i}</option>))}</select></div>
+                    <div><label className="text-sm">Chords</label><select value={instrumentSelection.chords} onChange={e => handleInstrumentChange('chords', e.target.value)} className="w-full bg-slate-700 p-2 rounded">{allAvailableInstruments.map(i => (<option key={i} value={i}>{i}</option>))}</select></div>
+                    <div><label className="text-sm">Bass</label><select value={instrumentSelection.bass} onChange={e => handleInstrumentChange('bass', e.target.value)} className="w-full bg-slate-700 p-2 rounded">{allAvailableInstruments.map(i => (<option key={i} value={i}>{i}</option>))}</select></div>
+                    
+                    {/* v7 Change: Local SoundFont Loader */}
+                    <hr className="border-slate-600"/>
+                    <h2 className="text-lg font-bold text-slate-300 pt-2">Local SoundFont</h2>
+                    <div><label className="text-sm">Load .sf2 File</label><input type="file" accept=".sf2" onChange={handleSoundFontFileChange} className="w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-purple-500 file:text-white hover:file:bg-purple-600"/></div>
+                    <div className="flex gap-2 pt-2">
+                        <button onClick={handlePreloadPack} disabled={isPreloading} className="bg-sky-600 text-sm w-full px-4 py-2 rounded hover:bg-sky-700 disabled:bg-slate-600">{isPreloading ? 'Preloading...' : 'Preload Pack'}</button>
+                        <button onClick={handleDownloadPack} className="bg-gray-600 text-sm w-full px-4 py-2 rounded hover:bg-gray-700">Download Pack</button>
+                    </div>
+                </div>
+
+                <div className="lg:col-span-2 bg-slate-800/50 rounded-lg p-6 space-y-4 border border-slate-700">
+                     <div className="flex justify-between items-center"><h2 className="text-xl font-bold">Orchestrator</h2>
+                        <div className="flex gap-2">
+                             <button onClick={handleGenerate} disabled={isGenerating} className="bg-purple-600 px-4 py-2 rounded hover:bg-purple-700 disabled:bg-slate-600">{isGenerating ? 'Generating...' : 'Generate'}</button>
+                             <button onClick={handlePlayToggle} disabled={!composition} className="bg-green-600 px-4 py-2 rounded hover:bg-green-700 disabled:bg-slate-600">{isPlaying ? 'Stop' : 'Play'}</button>
+                            <button onClick={handleSave} disabled={!composition || isExporting} className="bg-blue-600 px-4 py-2 rounded hover:bg-blue-700 disabled:bg-slate-600">{isExporting ? 'Saving...' : 'Save WAV'}</button>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-4 p-4 bg-slate-900/50 rounded">{activeChain.map((core) => <ChainNode key={core.id} core={core} status={generationStatus[core.id] || 'idle'} />)}</div>
+                    <div><h3 className="font-bold mb-2">Audio Visualizer</h3><canvas ref={canvasRef} width="1024" height="100" className="w-full h-24 rounded bg-slate-900"></canvas></div>
+                    <div><h3 className="font-bold mb-2">Logs</h3><div className="h-40 overflow-y-auto bg-slate-900/50 rounded p-2">{logs.map((log, i) => <LogEntry key={i} log={log} />)}</div></div>
+                </div>
+            </div>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+        </div>
+    );
+}
